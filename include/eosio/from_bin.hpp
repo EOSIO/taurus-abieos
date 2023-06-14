@@ -12,6 +12,7 @@
 #include <variant>
 #include <vector>
 #include <string_view>
+#include "pb_support.hpp"
 
 namespace eosio {
 
@@ -74,6 +75,24 @@ void from_bin_sequence(T& v, S& stream) {
       from_bin(v.back(), stream);
    }
 }
+
+#ifdef ABIEOS_HAS_PROTOBUF
+template <typename S>
+void from_bin(gpb::FileDescriptorSet& fds, S& stream) {
+   uint32_t size;
+   varuint32_from_bin(size, stream);
+   stream.check_available(size);
+   check(fds.ParseFromArray(stream.pos, size), "FileDescriptorSet deserialization error");
+   stream.skip(size);
+}
+#else
+template <typename S>
+void from_bin(gpb::FileDescriptorSet& fds, S& stream) {
+   uint32_t size;
+   varuint32_from_bin(size, stream);
+   stream.skip(size);
+}
+#endif
 
 template <typename T, std::size_t N, typename S>
 void from_bin(T (&v)[N], S& stream) {

@@ -10,6 +10,7 @@
 #include <variant>
 #include <errno.h>
 #include <map>
+#include "pb_support.hpp"
 
 namespace eosio {
 enum class from_json_error {
@@ -44,6 +45,7 @@ enum class from_json_error {
    unexpected_field,
    number_out_of_range,
    from_json_no_pair,
+   array_incorrect_length,
 
    // These are from rapidjson:
    document_empty,
@@ -178,6 +180,10 @@ struct json_token {
    std::string_view value_string = {};
 };
 
+const unsigned nondestructive_parse_flag =
+      rapidjson::kParseValidateEncodingFlag | rapidjson::kParseIterativeFlag | rapidjson::kParseNumbersAsStringsFlag;
+const unsigned destructive_parse_flag = rapidjson::kParseInsituFlag | nondestructive_parse_flag;
+
 class json_token_stream : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>, json_token_stream> {
  private:
    rapidjson::Reader             reader;
@@ -191,13 +197,19 @@ class json_token_stream : public rapidjson::BaseReaderHandler<rapidjson::UTF8<>,
 
    bool complete() { return reader.IterativeParseComplete(); }
 
-   std::reference_wrapper<const json_token> peek_token() {
+   const char* get_read_position() const { return ss.src_; }
+
+   template <unsigned parseFlags>
+   std::reference_wrapper<const json_token> peek_token_impl() {
       if (current_token.type != json_token_type::type_unread)
          return current_token;
-      check( reader.IterativeParseNext<rapidjson::kParseInsituFlag | rapidjson::kParseValidateEncodingFlag |
-                                         rapidjson::kParseIterativeFlag | rapidjson::kParseNumbersAsStringsFlag>(ss, *this),
+      check( reader.IterativeParseNext<parseFlags>(ss, *this),
             convert_error_to_string_view(reader.GetParseErrorCode()) );
       return current_token;
+   }
+
+   std::reference_wrapper<const json_token> peek_token() {
+      return peek_token_impl<destructive_parse_flag>();
    }
 
    void eat_token() { current_token.type = json_token_type::type_unread; }
@@ -362,6 +374,10 @@ template <typename SrcIt, typename DestIt>
    }
    return true;
 }
+
+/// \exclude
+template <typename T, typename S>
+void from_json(T& result, S& stream);
 
 /// \group from_json_explicit Parse JSON (Explicit Types)
 /// Parse JSON and convert to `result`. These overloads handle specified types.
@@ -603,7 +619,17 @@ void from_json_hex(std::vector<char>& result, S& stream) {
          convert_json_error(from_json_error::expected_hex_string) );
 }
 
-#ifdef __eosio_cdt__
+template <typename S>
+void from_json(std::vector<char>& obj, S& stream) {
+   return from_json_hex(obj, stream);
+}
+
+template <typename S>
+void from_json(std::vector<std::byte>& obj, S& stream) {
+   return from_json_hex(reinterpret_cast<std::vector<char>&>(obj), stream);
+}
+
+#ifdef __wasm__
 
 template <typename S> void from_json(long double& result, S& stream) {
    auto s = stream.get_string();
@@ -628,11 +654,11 @@ inline void from_json_object(S& stream, F f) {
    stream.get_end_object();
 }
 
-template <typename S>
+template <unsigned parse_flag, typename S>
 void from_json_skip_value(S& stream) {
    uint64_t depth = 0;
    do {
-      auto t = stream.peek_token();
+      auto t = stream.template peek_token_impl<parse_flag>();
       auto type = t.get().type;
       if (type == json_token_type::type_start_object || type == json_token_type::type_start_array)
          ++depth;
@@ -642,10 +668,28 @@ void from_json_skip_value(S& stream) {
    } while (depth);
 }
 
+#if ABIEOS_HAS_PROTOBUF
+template <typename S>
+void from_json(gpb::FileDescriptorSet& fds, S& stream) {
+   auto start = stream.get_read_position() + 1;
+   from_json_skip_value<nondestructive_parse_flag>(stream);
+
+   auto                       end = stream.get_read_position();
+   gpb::util::JsonParseOptions options;
+   auto status = gpb::util::JsonStringToMessage(gpb::StringPiece(start, end - start), &fds, options);
+   check(status.ok(), status.message().as_string());
+}
+#else
+template <typename S>
+void from_json(gpb::FileDescriptorSet& fds, S& stream) {
+   check(false, "protobuf is not supported on this platform");
+}
+#endif
+
 /// \output_section Parse JSON (Reflected Objects)
 /// Parse JSON and convert to `obj`. This overload works with
 /// [reflected objects](standardese://reflection/).
-template <typename T, typename S, typename std::enable_if_t<!std::is_enum_v<T>, bool> = true>
+template <typename T, typename S>
 void from_json(T& obj, S& stream) {
    from_json_object(stream, [&](std::string_view key) {
       bool found = false;
@@ -656,7 +700,7 @@ void from_json(T& obj, S& stream) {
          }
       });
       if (!found)
-         from_json_skip_value(stream);
+         from_json_skip_value<destructive_parse_flag>(stream);
    });
 }
 

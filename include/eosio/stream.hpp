@@ -161,7 +161,7 @@ void write_newline(S&) {
 template <typename Base>
 struct pretty_stream : Base {
    using Base::Base;
-   int               indent_size = 4;
+   unsigned          indent_size = 4;
    std::vector<char> current_indent;
 };
 
@@ -196,7 +196,7 @@ struct input_stream {
    input_stream(const char* pos, size_t size) : pos{ pos }, end{ pos + size } {}
    input_stream(const char* pos, const char* end) : pos{ pos }, end{ end } {}
    input_stream(const std::vector<char>& v) : pos{ v.data() }, end{ v.data() + v.size() } {}
-   input_stream(std::string_view v) : pos{ v.data() }, end{ v.data() + v.size() } {}
+   explicit input_stream(std::string_view v) : pos{ v.data() }, end{ v.data() + v.size() } {}
    input_stream(const input_stream&) = default;
 
    input_stream& operator=(const input_stream&) = default;

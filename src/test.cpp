@@ -1,7 +1,7 @@
 // copyright defined in abieos/LICENSE.txt
 
-#include "abieos.h"
-#include "abieos.hpp"
+#include <eosio/abieos.h>
+#include <eosio/abieos.hpp>
 #include "fuzzer.hpp"
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
@@ -10,8 +10,6 @@
 #include <stdio.h>
 #include <string>
 #include <vector>
-
-extern const char* const state_history_plugin_abi;
 
 inline const bool generate_corpus = false;
 
@@ -329,6 +327,24 @@ const char testKvTablesAbi[] = R"({
             "name": "updateerr2",
             "base": "",
             "fields": []
+        },
+        {
+            "name": "quardep",
+            "base": "",
+            "fields": [
+                {
+                    "name": "customer",
+                    "type": "name"
+                },
+                {
+                    "name": "asset",
+                    "type": "asset"
+                },
+                {
+                    "name": "uid",
+                    "type": "uint64"
+                }
+            ]
         }
     ],
     "actions": [
@@ -366,6 +382,11 @@ const char testKvTablesAbi[] = R"({
             "name": "updateerr2",
             "type": "updateerr2",
             "ricardian_contract": ""
+        },
+        {
+            "name": "quardep",
+            "type": "quardep",
+            "ricardian_contract": ""
         }
     ],
     "tables": [],
@@ -373,7 +394,7 @@ const char testKvTablesAbi[] = R"({
         "testtable": {
             "type": "my_struct",
             "primary_index": {
-                "name": "primary",
+                "name": "by.id",
                 "type": "name"
             },
             "secondary_indices": {
@@ -385,7 +406,13 @@ const char testKvTablesAbi[] = R"({
                 }
             }
         }
-    }
+    },
+    "action_results": [
+        {
+            "name": "quardep",
+            "result_type": "uint64"
+        }
+    ]
 })";
 
 const char packedTransactionAbi[] = R"({
@@ -599,7 +626,6 @@ void check_types() {
     auto testKvAbiName = check_context(context, abieos_string_to_name(context, "testkv.abi"));
     check_context(context, abieos_set_abi(context, 0, transactionAbi));
     check_context(context, abieos_set_abi(context, 1, packedTransactionAbi));
-    check_context(context, abieos_set_abi(context, 2, state_history_plugin_abi));
     check_context(context, abieos_set_abi_hex(context, token, tokenHexAbi));
     check_context(context, abieos_set_abi(context, testAbiName, testAbi));
     check_context(context, abieos_set_abi_hex(context, testHexAbiName, testHexAbi));
@@ -641,9 +667,6 @@ void check_types() {
         } else if (contract == 1) {
            abi_is_bin = false;
            abi = {packedTransactionAbi, packedTransactionAbi + strlen( packedTransactionAbi )};
-        } else if (contract == 2) {
-           abi_is_bin = false;
-           abi = {state_history_plugin_abi, state_history_plugin_abi + strlen( state_history_plugin_abi )};
         } else if (contract == token) {
             abi_is_bin = true;
             std::string error;
@@ -711,6 +734,11 @@ void check_types() {
     check_type(context, 0, "uint8[]", R"([10])");
     check_type(context, 0, "uint8[]", R"([10,9])");
     check_type(context, 0, "uint8[]", R"([10,9,8])");
+
+    check_type(context, 0, "int32[3]", R"([10,9,8])");
+    check_error(context, "array size mismatch",
+                [&] { return abieos_json_to_bin(context, 0, "int32[3]", R"([10,9])"); });
+
     check_type(context, 0, "int16", R"(0)");
     check_type(context, 0, "int16", R"(32767)");
     check_type(context, 0, "int16", R"(-32768)");
@@ -858,6 +886,15 @@ void check_types() {
     check_error(context, "expected string containing hex digits",
                 [&] { return abieos_json_to_bin(context, 0, "bytes", R"(true)"); });
     check_error(context, "Stream overrun", [&] { return abieos_hex_to_json(context, 0, "bytes", "01"); });
+
+    check_type(context, 0, "uint8[2]", R"("AABB")");
+    check_error(context, "expected fixed array size matches",
+                [&] { return abieos_json_to_bin(context, 0, "uint8[2]", R"(")"); });
+
+    check_type(context, 0, "int8[2]", R"("AABB")");
+    check_error(context, "expected fixed array size matches",
+                [&] { return abieos_json_to_bin(context, 0, "int8[2]", R"(")"); });
+
     check_type(context, 0, "string", R"("")");
     check_type(context, 0, "string", R"("z")");
     check_type(context, 0, "string", R"("This is a string.")");
@@ -866,7 +903,8 @@ void check_types() {
     check(abieos_bin_to_json(context, 0, "string", "\x11invalid utf8: \xff\xfe\xfd", 18) ==
               std::string(R"("invalid utf8: ???")"),
           "invalid utf8");
-    check(abieos_bin_to_json(context, 0, "string", "\4\xe8\xbf\x99\n", 5) == std::string("\"\xe8\xbf\x99\\u000A\""),
+    check(abieos_bin_to_json(context, 0, "string", "\x08\xe8\xbf\x99\b\f\n\r\t", 9) ==
+              std::string("\"\xe8\xbf\x99\\b\\f\\n\\r\\t\""),
           "escaping");
     check_error(context, "Stream overrun", [&] { return abieos_hex_to_json(context, 0, "string", "01"); });
     check_type(context, 0, "checksum160", R"("0000000000000000000000000000000000000000")");
@@ -1001,16 +1039,7 @@ void check_types() {
     check_type(
         context, 1, "packed_transaction_v0",
         R"({"signatures":["SIG_K1_K5PGhrkUBkThs8zdTD9mGUJZvxL4eU46UjfYJSEdZ9PXS2Cgv5jAk57yTx4xnrdSocQm6DDvTaEJZi5WLBsoZC4XYNS8b3"],"compression":0,"packed_context_free_data":"","packed_trx":{"expiration":"2009-02-13T23:31:31.000","ref_block_num":1234,"ref_block_prefix":5678,"max_net_usage_words":0,"max_cpu_usage_ms":0,"delay_sec":0,"context_free_actions":[],"actions":[{"account":"eosio.token","name":"transfer","authorization":[{"actor":"useraaaaaaaa","permission":"active"}],"data":"608C31C6187315D6708C31C6187315D60100000000000000045359530000000000"}],"transaction_extensions":[]}})");
-    check_type(
-        context, 2, "transaction_trace",
-        R"(["transaction_trace_v0",{"id":"3098EA9476266BFA957C13FA73C26806D78753099CE8DEF2A650971F07595A69","status":0,"cpu_usage_us":2000,"net_usage_words":25,"elapsed":"194","net_usage":"200","scheduled":false,"action_traces":[["action_trace_v1",{"action_ordinal":1,"creator_action_ordinal":0,"receipt":["action_receipt_v0",{"receiver":"eosio","act_digest":"F2FDEEFF77EFC899EED23EE05F9469357A096DC3083D493571CF68A422C69EFE","global_sequence":"11","recv_sequence":"11","auth_sequence":[{"account":"eosio","sequence":"11"}],"code_sequence":2,"abi_sequence":0}],"receiver":"eosio","act":{"account":"eosio","name":"newaccount","authorization":[{"actor":"eosio","permission":"active"}],"data":"0000000000EA305500409406A888CCA501000000010002C0DED2BC1F1305FB0FAAC5E6C03EE3A1924234985427B6167CA569D13DF435CF0100000001000000010002C0DED2BC1F1305FB0FAAC5E6C03EE3A1924234985427B6167CA569D13DF435CF01000000"},"context_free":false,"elapsed":"83","console":"","account_ram_deltas":[{"account":"oracle.aml","delta":"2724"}],"account_disk_deltas":[],"except":null,"error_code":null,"return_value":""}]],"account_ram_delta":null,"except":null,"error_code":null,"failed_dtrx_trace":null,"partial":null}])");
-    check_type(
-        context, 2, "transaction_trace_msg",
-        R"(["transaction_trace_exception",{"error_code":"3","error_message":"error happens"}])");
-    check_type(
-        context, 2, "transaction_trace_msg",
-        R"(["transaction_trace",["transaction_trace_v0",{"id":"B2C8D46F161E06740CFADABFC9D11F013A1C90E25337FF3E22840B195E1ADC4B","status":0,"cpu_usage_us":2000,"net_usage_words":12,"elapsed":"7670","net_usage":"96","scheduled":false,"action_traces":[["action_trace_v1",{"action_ordinal":1,"creator_action_ordinal":0,"receipt":["action_receipt_v0",{"receiver":"eosio","act_digest":"7670940C29EC0A4C573EF052C5A29236393F587F208222B3C1B6A9C8FEA2C66A","global_sequence":"27","recv_sequence":"1","auth_sequence":[{"account":"eosio","sequence":"2"}],"code_sequence":1,"abi_sequence":0}],"receiver":"eosio","act":{"account":"eosio","name":"doit","authorization":[{"actor":"eosio","permission":"active"}],"data":"00"},"context_free":false,"elapsed":"7589","console":"","account_ram_deltas":[],"account_disk_deltas":[],"except":null,"error_code":null,"return_value":"01FFFFFFFFFFFFFFFF00"}]],"account_ram_delta":null,"except":null,"error_code":null,"failed_dtrx_trace":null,"partial":null}]])");
-
+    
     check_error(context, "recursion limit reached", [&] {
         return abieos_json_to_bin_reorderable(
             context, 0, "int8",
@@ -1237,8 +1266,28 @@ void check_types() {
     std::string table_def = check_context(
         context, abieos_get_kv_table_def(context, testKvAbiName, abieos_string_to_name(context, "testtable")));
     if (table_def !=
-        R"({"type":"my_struct","primary_index":{"name":"primary","type":"name"},"secondary_indices":{"bar":{"type":"uint64"},"foo":{"type":"string"}}})")
-        throw std::runtime_error("mismatch");
+        R"({"type":"my_struct","primary_index":{"name":"by.id","type":"name"},"secondary_indices":{"bar":{"type":"uint64"},"foo":{"type":"string"}}})")
+        throw std::runtime_error("kv_table_def mismatch");
+
+    std::string action_type = check_context(
+        context, abieos_get_type_for_action(context, testKvAbiName, abieos_string_to_name(context, "updateerr2")));
+    if(action_type != "updateerr2")
+        throw std::runtime_error("action type mismatch");
+
+    std::string action_result_type = check_context(
+        context, abieos_get_type_for_action_result(context, testKvAbiName, abieos_string_to_name(context, "quardep")));
+    if(action_result_type != "uint64")
+        throw std::runtime_error("action return type mismatch");
+
+    std::string kv_table_type = check_context(
+        context, abieos_get_type_for_kv_table(context, testKvAbiName, abieos_string_to_name(context, "testtable")));
+    if(kv_table_type != "my_struct")
+        throw std::runtime_error("kv_table type mismatch");
+
+    std::string kv_table_primary_index_name = check_context(
+        context, abieos_get_kv_table_primary_index_name(context, testKvAbiName, abieos_string_to_name(context, "testtable")));
+    if(kv_table_primary_index_name != "by.id")
+        throw std::runtime_error("kv_table primary name mismatch");
 
     auto check_checksum_capacity = [&](const auto& checksum, size_t capacity, const char* msg) {
         if(checksum.capacity() != capacity)

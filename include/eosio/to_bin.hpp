@@ -9,6 +9,7 @@
 #include <set>
 #include <variant>
 #include <vector>
+#include "pb_support.hpp"
 
 namespace eosio {
 
@@ -59,6 +60,41 @@ template <typename S>
 void to_bin(const std::string& s, S& stream) {
    to_bin(std::string_view{ s }, stream);
 }
+
+#ifdef ABIEOS_HAS_PROTOBUF
+namespace detail {
+
+template <typename S>
+class pb_ostream_adaptor : public gpb::io::CopyingOutputStream {
+   S& stream;
+   public:
+      pb_ostream_adaptor(S& s) : stream(s) {}
+      bool Write(const void* buffer, int size) override {
+         stream.write(buffer,size);
+         return true;
+      }
+};
+
+} // namespace detail
+
+inline void to_bin(const gpb::FileDescriptorSet& fds, size_stream& stream) {
+   uint32_t s = fds.ByteSizeLong();;
+   stream.size += s;
+   varuint32_to_bin(s, stream);
+}
+
+template <typename S>
+void to_bin(const gpb::FileDescriptorSet& fds, S& stream) {
+   varuint32_to_bin(fds.ByteSizeLong(), stream);
+   detail::pb_ostream_adaptor<S> a1(stream);
+   gpb::io::CopyingOutputStreamAdaptor a2(&a1);
+   check(fds.SerializeToZeroCopyStream(&a2), "FileDescriptorSet serialization error");
+}
+
+#else
+template <typename S>
+void to_bin(const gpb::FileDescriptorSet& fds, S& stream){}
+#endif
 
 template <typename T, typename S>
 void to_bin_range(const T& obj, S& stream) {
