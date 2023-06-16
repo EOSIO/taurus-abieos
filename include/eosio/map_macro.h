@@ -27,7 +27,7 @@
  */
 
 /*
- * This file has been modified by Bullish and its affiliates
+ * This file has been modified by Bullish Global and its affiliates
  */
 
 #ifndef EOSIO_MAP_MACRO_H_INCLUDED
@@ -49,8 +49,6 @@
 #define EOSIO_MAP_NEXT0(test, next, ...) next EOSIO_MAP_OUT
 #define EOSIO_MAP_NEXT1(test, next) EOSIO_MAP_NEXT0(test, next, 0)
 #define EOSIO_MAP_NEXT(test, next) EOSIO_MAP_NEXT1(EOSIO_MAP_GET_END test, next)
-
-// Macros below this point added by Bullish and its affiliates
 
 #define EOSIO_MAP_REUSE_ARG0_0(f, arg0, x, peek, ...)                                                                  \
    f(arg0, x) EOSIO_MAP_NEXT(peek, EOSIO_MAP_REUSE_ARG0_1)(f, arg0, peek, __VA_ARGS__)
