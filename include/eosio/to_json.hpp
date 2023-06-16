@@ -10,6 +10,7 @@
 #include <rapidjson/encodings.h>
 #include <variant>
 #include <map>
+#include "pb_support.hpp"
 
 namespace eosio {
 
@@ -52,6 +53,16 @@ void to_json(std::string_view sv, S& stream) {
             stream.write("\\\"", 2);
          } else if (*begin == '\\') {
             stream.write("\\\\", 2);
+         } else if (*begin == '\b') {
+            stream.write("\\b", 2);
+         } else if (*begin == '\f') {
+            stream.write("\\f", 2);
+         } else if (*begin == '\n') {
+            stream.write("\\n", 2);
+         } else if (*begin == '\r') {
+            stream.write("\\r", 2);
+         } else if (*begin == '\t') {
+            stream.write("\\t", 2);
          } else {
             stream.write("\\u00", 4);
             stream.write(hex_digits[(unsigned char)(*begin) >> 4]);
@@ -176,6 +187,20 @@ template <typename S> void to_json(unsigned __int128 value, S& stream) { return 
 template <typename S> void to_json(__int128 value, S& stream) { return int_to_json(value, stream); }
 #endif
 
+#ifdef ABIEOS_HAS_PROTOBUF
+template <typename S>
+void to_json(const google::protobuf::FileDescriptorSet& fds, S& stream) {
+   std::string json_str;
+   gpb::util::MessageToJsonString(fds, &json_str);
+   stream.write(json_str.c_str(), json_str.size());
+}
+#else
+template <typename S>
+void to_json(const gpb::FileDescriptorSet& fds, S& stream) { 
+   stream.write("{}", 2);
+}
+#endif
+
 // clang-format on
 
 template <typename T, typename S>
@@ -254,7 +279,7 @@ void to_json(const std::variant<T...>& obj, S& stream) {
       using value_type = T;
    };
 
-template <typename T, typename S, typename std::enable_if_t<!std::is_enum_v<T>, bool> = true>
+template <typename T, typename S>
 void to_json(const T& t, S& stream) {
    bool         first = true;
    stream.write('{');
@@ -301,7 +326,17 @@ void to_json_hex(const char* data, size_t size, S& stream) {
    stream.write('"');
 }
 
-#ifdef __eosio_cdt__
+template <typename S>
+void to_json(const std::vector<char>& obj, S& stream) {
+   return to_json_hex(obj.data(), obj.size(), stream);
+}
+
+template <typename S>
+void to_json(const std::vector<std::byte>& obj, S& stream) {
+   return to_json_hex(reinterpret_cast<const char*>(obj.data()), obj.size(), stream);
+}
+
+#ifdef __wasm__
 
 template <typename S> void to_json(long double value, S& stream) {
    return to_json_hex(reinterpret_cast<const char*>(&value), sizeof(long double), stream);

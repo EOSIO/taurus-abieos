@@ -82,8 +82,7 @@ void test(const T& value, eosio::abi& abi1, eosio::abi& abi2) {
       auto bin2 = type->json_to_bin({json.data(), json.size()});
       CHECK(bin2 == bin);
       // json_to_bin
-      eosio::input_stream bin_stream{bin};
-      auto json2 = type->bin_to_json(bin_stream);
+      auto json2 = type->bin_to_json({bin.data(), bin.size()});
       CHECK(json2 == std::string(json.data(), json.size()));
    }
 }

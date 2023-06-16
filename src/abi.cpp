@@ -1,6 +1,5 @@
 #include <eosio/abi.hpp>
-#include "abieos.hpp"
-
+#include <eosio/abieos.hpp>
 using namespace eosio;
 
 namespace {
@@ -8,6 +7,17 @@ namespace {
 template <int i>
 bool ends_with(const std::string& s, const char (&suffix)[i]) {
     return s.size() >= i - 1 && !strcmp(s.c_str() + s.size() - (i - 1), suffix);
+}
+
+bool is_szarray(const std::string& s){
+   int n = s.size();
+   if(n < 3) return false;
+   if(s[n-1] != ']') return false;
+   int i = n -2;
+   if(!(s[i] >= '0' && s[i] <= '9')) return false;
+   while(i >=0 &&  s[i] >= '0' && s[i] <= '9' ) --i;
+   if(i < 0  || s[i] != '[' ) return false;
+   return true;
 }
 
 template <typename T>
@@ -48,27 +58,42 @@ abi_type* get_type(std::map<std::string, abi_type>& abi_types,
    eosio::check(depth < 32,
         eosio::convert_abi_error(abi_error::recursion_limit_reached));
     auto it = abi_types.find(name);
+
+    auto res = [&](auto&& abi_of, auto ser) {
+        return std::addressof(abi_types.try_emplace(name, name, std::move(abi_of), ser).first->second);
+    };
+
     if (it == abi_types.end()) {
         if (ends_with(name, "?")) {
             auto base = get_type(abi_types, name.substr(0, name.size() - 1), depth + 1);
-            eosio::check(!holds_any_alternative<abi_type::optional, abi_type::array, abi_type::extension>(base->_data),
-                  eosio::convert_abi_error(abi_error::invalid_nesting));
-            auto [iter, success] = abi_types.try_emplace(name, name, abi_type::optional{base}, &abi_serializer_for< ::abieos::pseudo_optional>);
-            return &iter->second;
+            eosio::check(!holds_any_alternative<abi_type::optional, abi_type::array, abi_type::szarray, abi_type::extension>(base->_data),
+                  "Invalid nesting for " + name);
+            return res(abi_type::optional{base}, &abi_serializer_for< ::abieos::pseudo_optional>);
         } else if (ends_with(name, "[]")) {
             auto element = get_type(abi_types, name.substr(0, name.size() - 2), depth + 1);
-            eosio::check(!holds_any_alternative<abi_type::optional, abi_type::array, abi_type::extension>(element->_data),
-                  eosio::convert_abi_error(abi_error::invalid_nesting));
-            auto [iter, success] = abi_types.try_emplace(name, name, abi_type::array{element}, &abi_serializer_for< ::abieos::pseudo_array>);
-            return &iter->second;
+            eosio::check(!holds_any_alternative<abi_type::array, abi_type::szarray, abi_type::extension>(element->_data),
+                  "Invalid nesting for " + name);
+            return res( abi_type::array{element}, &abi_serializer_for< ::abieos::pseudo_array>);
+         } else if(is_szarray(name) ){
+            int pos = name.find_last_of('[');
+            auto element_type_name = name.substr(0, pos);
+            auto element = get_type(abi_types, element_type_name, depth + 1);
+            eosio::check(!holds_any_alternative<abi_type::array, abi_type::szarray, abi_type::extension>(element->_data),
+                  "Invalid nesting for " + name);
+            auto end_pos = name.find_last_of(']');
+            auto size = std::stoul(name.substr(pos+1, end_pos - pos -1));
+            if (element_type_name == "uint8" || element_type_name == "int8") 
+                return res(abi_type::szarray{element, size}, &abi_serializer_for<::abieos::pseudo_szbytes>);
+            else 
+                return res(abi_type::szarray{element, size}, &abi_serializer_for<::abieos::pseudo_szarray>);
+            
         } else if (ends_with(name, "$")) {
             auto base = get_type(abi_types, name.substr(0, name.size() - 1), depth + 1);
             eosio::check(!std::holds_alternative<abi_type::extension>(base->_data),
-                  eosio::convert_abi_error(abi_error::invalid_nesting));
-            auto [iter, success] = abi_types.try_emplace(name, name, abi_type::extension{base}, &abi_serializer_for< ::abieos::pseudo_extension>);
-            return &iter->second;
+                  "Invalid nesting for " + name);
+            return res(abi_type::extension{base}, &abi_serializer_for< ::abieos::pseudo_extension>);
         } else
-           eosio::check(false, eosio::convert_abi_error(abi_error::unknown_type));
+           eosio::check(false, std::string("Unknown type ") + name);
     }
 
     // resolve aliases
@@ -97,7 +122,7 @@ abi_type::struct_ resolve(std::map<std::string, abi_type>& abi_types, const stru
         if(auto* b = std::get_if<abi_type::struct_>(&base->_data)) {
             result.fields = b->fields;
         } else {
-           eosio::check(false, eosio::convert_abi_error(abi_error::base_not_a_struct));
+           eosio::check(false, "Base not a struct: " + type->name);
         }
     }
     for (auto& field : type->fields) {
@@ -122,7 +147,7 @@ abi_type::variant resolve(std::map<std::string, abi_type>& abi_types, const vari
 abi_type::alias resolve(std::map<std::string, abi_type>& abi_types, const abi_type::alias_def* type, int depth) {
     auto t = get_type(abi_types, *type, depth + 1);
     eosio::check(!std::holds_alternative<abi_type::extension>(t->_data),
-        eosio::convert_abi_error(abi_error::extension_typedef));
+        "Extension typedef: " + t->name);
     return abi_type::alias{t};
 }
 
@@ -173,22 +198,19 @@ void eosio::convert(const abi_def& abi, eosio::abi& c) {
        eosio::check(!t.new_type_name.empty(),
             eosio::convert_abi_error(abi_error::missing_name));
         auto [_, inserted] = c.abi_types.try_emplace(t.new_type_name, t.new_type_name, &t.type, nullptr);
-        eosio::check(inserted,
-            eosio::convert_abi_error(abi_error::redefined_type));
+        eosio::check(inserted, "Redefined type: " + t.new_type_name);
     }
     for (auto& s : abi.structs) {
        eosio::check(!s.name.empty(),
             eosio::convert_abi_error(abi_error::missing_name));
         auto [it, inserted] = c.abi_types.try_emplace(s.name, s.name, &s, &abi_serializer_for<::abieos::pseudo_object>);
-        eosio::check(inserted,
-            eosio::convert_abi_error(abi_error::redefined_type));
+        eosio::check(inserted, "Redefined type: " + s.name);
     }
     for (auto& v : abi.variants.value) {
        eosio::check(!v.name.empty(),
             eosio::convert_abi_error(abi_error::missing_name));
         auto [it, inserted] = c.abi_types.try_emplace(v.name, v.name, &v, &abi_serializer_for<::abieos::pseudo_variant>);
-        eosio::check(inserted,
-            eosio::convert_abi_error(abi_error::redefined_type));
+        eosio::check(inserted, "Redefined type: " + v.name);
     }
     for (auto& [_, t] : c.abi_types) {
         fill(c.abi_types, t, 0);
@@ -199,12 +221,17 @@ void eosio::convert(const abi_def& abi, eosio::abi& c) {
         eosio::vector_stream strm(bytes);
         to_json(val, strm);
         c.kv_tables.try_emplace(key, bytes.begin(), bytes.end());
+        c.kv_table_types.try_emplace(key, val.type);
+        c.kv_table_primary_key_name.try_emplace(key, val.primary_index.name);
     }
+
+    c.protobuf_converter = std::make_unique<protobuf::message_converter>(abi.protobuf_types.value);
 }
 
 void to_abi_def(abi_def& def, const std::string& name, const abi_type::builtin&) {}
 void to_abi_def(abi_def& def, const std::string& name, const abi_type::optional&) {}
 void to_abi_def(abi_def& def, const std::string& name, const abi_type::array&) {}
+void to_abi_def(abi_def& def, const std::string& name, const abi_type::szarray&) {}
 void to_abi_def(abi_def& def, const std::string& name, const abi_type::extension&) {}
 
 template<typename T>
@@ -250,25 +277,127 @@ void eosio::convert(const eosio::abi& abi, eosio::abi_def& def) {
 const abi_serializer* const eosio::object_abi_serializer = &abi_serializer_for< ::abieos::pseudo_object>;
 const abi_serializer* const eosio::variant_abi_serializer = &abi_serializer_for< ::abieos::pseudo_variant>;
 const abi_serializer* const eosio::array_abi_serializer = &abi_serializer_for< ::abieos::pseudo_array>;
+const abi_serializer* const eosio::szarray_abi_serializer = &abi_serializer_for< ::abieos::pseudo_szarray>;
 const abi_serializer* const eosio::extension_abi_serializer = &abi_serializer_for< ::abieos::pseudo_extension>;
 const abi_serializer* const eosio::optional_abi_serializer = &abi_serializer_for< ::abieos::pseudo_optional>;
+const abi_serializer* const eosio::szbytes_abi_serializer = &abi_serializer_for< ::abieos::pseudo_szbytes>;
 
 std::vector<char> eosio::abi_type::json_to_bin_reorderable(std::string_view json, std::function<void()> f) const {
    abieos::jvalue tmp;
    abieos::json_to_jvalue(tmp, json, f);
    std::vector<char> result;
    abieos::json_to_bin(result, this, tmp, f);
-   return result;
+   return result; 
 }
 
-std::vector<char> eosio::abi_type::json_to_bin(std::string_view json, std::function<void()> f) const {
+std::vector<char> eosio::abi_type::json_to_bin(std::string_view json) const {
    std::vector<char> result;
-   abieos::json_to_bin(result, this, json, f);
+   abieos::json_to_bin(result, this, json, []() {});
    return result;
 }
 
-std::string eosio::abi_type::bin_to_json(input_stream& bin, std::function<void()> f) const {
+std::string eosio::abi_type::bin_to_json(eosio::input_stream bin) const {
    std::string result;
-   abieos::bin_to_json(bin, this, result, f);
+   abieos::bin_to_json(bin, this, result, []() {});
+   check(bin.pos == bin.end, "Extra data");
    return result;
 }
+
+std::string eosio::abi::convert_to_json(const char* type, eosio::input_stream bin) {
+   std::string result;
+   if (strncmp("protobuf::", type, sizeof("protobuf::") - 1) != 0) {
+      // non-protobuf types
+      auto t = get_type(type);
+      return t->bin_to_json(bin);
+   } else {
+      check(protobuf_converter.get(), "no protobuf types exists in ABI");
+      // protobuf types
+      uint64_t len;
+      varuint64_from_bin(len, bin);
+      eosio::check(len == bin.remaining(), "invalid protobuf binary size");
+      return protobuf_converter->to_json(std::string(type + sizeof("protobuf::") - 1),
+                                         std::string_view(bin.pos, bin.remaining()));
+   }
+}
+
+std::vector<char> eosio::abi::convert_to_bin(const char* type, std::string_view json) {
+   if (strncmp("protobuf::", type, sizeof("protobuf::") - 1) != 0) {
+      // non-protobuf types
+      auto t = get_type(type);
+      return t->json_to_bin(json);
+   } else {
+      check(protobuf_converter.get(),  "no protobuf types exists in ABI");
+      // protobuf types
+      auto r = protobuf_converter->from_json(std::string(type + sizeof("protobuf::") - 1), json);
+      std::vector<char> result;
+      eosio::vector_stream strm{result};
+      to_bin(r, strm);
+      return result;
+   }
+}
+
+eosio::abi::abi(std::string abi_json) {
+    json_token_stream stream(abi_json.data());
+    abi_def def = from_json<abi_def>(stream);
+    check(def.version.substr(0, 13) == "eosio::abi/1.", "unsupported abi version"); 
+    convert(def, *this);
+}
+
+eosio::abi::abi(eosio::input_stream bin) {
+    abi_def def = from_bin<abi_def>(bin);
+    check(def.version.substr(0, 13) == "eosio::abi/1.", "unsupported abi version"); 
+    convert(def, *this);
+}
+
+std::vector<char> eosio::abi_def::json_to_bin(std::string input_json){
+    if (input_json.empty() ) return {};
+    eosio::json_token_stream stream(input_json.data());
+    return convert_to_bin(eosio::from_json<eosio::abi_def>(stream));
+}
+
+std::string eosio::abi_def::bin_to_json(eosio::input_stream bin) {
+    if (bin.remaining() ==0) return {};
+    abi_def def;
+    return convert_to_json(eosio::from_bin<eosio::abi_def>(bin));
+}
+
+std::string eosio::abi::kv_table_primary_index_to_json(input_stream key, input_stream value) {
+    // for reqular kv contract, the format of the key is 
+    //    01 __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ __ 
+    //      +_table name big endian_+_index name big endian_+
+    // 
+    // for kv_caching_singleton, the format of the key is 
+    //     80 00 00 02 __ __ __ __ __ __ __ __ 
+    //                +_ singleton name big endian
+    // 
+
+    auto from_key = [](eosio::name& name, input_stream& strm) {
+        uint64_t v;
+        from_bin(v, strm);
+        name.value = __builtin_bswap64(v);
+    };
+    
+    uint8_t discriminator;
+    from_bin(discriminator, key);
+    if (discriminator == 0x01 && key.remaining() >= 2*sizeof(eosio::name) ) {
+        // regular kv table
+        eosio::name table_name;
+        from_key(table_name, key);
+        eosio::name primary_key_index_name;
+        from_key(primary_key_index_name, key);
+        auto primary_key_itr = kv_table_primary_key_name.find(table_name);
+        std::string primary_key_name = primary_key_itr->second.to_string();
+        std::string primary_key_index_name_string = primary_key_index_name.to_string();
+        if (primary_key_itr != kv_table_primary_key_name.end() && primary_key_itr->second == primary_key_index_name) {
+            return kv_table_bin_to_json(table_name, value);
+        }
+    } else if (discriminator == 0x80 && key.remaining() == 3+sizeof(eosio::name)) {
+        // kv_caching_singleton
+        key.skip(3);
+        eosio::name table_name;
+        from_key(table_name, key);
+        return kv_table_bin_to_json(table_name, value);
+    }
+    return {};
+}
+

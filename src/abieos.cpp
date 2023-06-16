@@ -1,8 +1,7 @@
 // copyright defined in abieos/LICENSE.txt
 
-#include "abieos.h"
-#include "abieos.hpp"
-
+#include <eosio/abieos.h>
+#include <eosio/abieos.hpp>
 #include <memory>
 
 using namespace abieos;
@@ -93,17 +92,8 @@ extern "C" const char* abieos_name_to_string(abieos_context* context, uint64_t n
 extern "C" abieos_bool abieos_set_abi(abieos_context* context, uint64_t contract, const char* abi) {
     fix_null_str(abi);
     return handle_exceptions(context, false, [&]() {
-        context->last_error = "abi parse error";
-        abi_def def{};
-        std::string error;
-        std::string abi_copy{abi};
-        eosio::json_token_stream stream(abi_copy.data());
-        from_json(def, stream);
-        if (!check_abi_version(def.version, error))
-            return set_error(context, std::move(error));
-        abieos::abi c;
-        convert(def, c);
-        context->contracts.insert({name{contract}, std::move(c)});
+        context->last_error = "abi parse error";  
+        context->contracts.insert_or_assign(name{contract},  std::string{abi});
         return true;
     });
 }
@@ -113,18 +103,7 @@ extern "C" abieos_bool abieos_set_abi_bin(abieos_context* context, uint64_t cont
         context->last_error = "abi parse error";
         if (!data || !size)
             return set_error(context, "no data");
-        std::string error;
-        eosio::input_stream stream{data, size};
-        std::string version;
-        from_bin(version, stream);
-        if (!check_abi_version(version, error))
-            return set_error(context, std::move(error));
-        abi_def def{};
-        stream = {data, size};
-        from_bin(def, stream);
-        abieos::abi c;
-        convert(def, c);
-        context->contracts.insert({name{contract}, std::move(c)});
+        context->contracts.insert_or_assign(name{contract},  eosio::input_stream{data, size}); 
         return true;
     });
 }
@@ -139,7 +118,8 @@ extern "C" abieos_bool abieos_set_abi_hex(abieos_context* context, uint64_t cont
                 set_error(context, std::move(error));
             return false;
         }
-        return abieos_set_abi_bin(context, contract, data.data(), data.size());
+        context->contracts.insert_or_assign(name{contract}, std::move(data));
+        return true;
     });
 }
 
@@ -170,6 +150,51 @@ extern "C" const char* abieos_get_type_for_table(abieos_context* context, uint64
             throw std::runtime_error("contract \"" + eosio::name_to_string(contract) + "\" does not have table \"" +
                                      eosio::name_to_string(table) + "\"");
         return table_it->second.c_str();
+    });
+}
+
+extern "C" const char* abieos_get_type_for_kv_table(abieos_context* context, uint64_t contract, uint64_t kv_table) {
+    return handle_exceptions(context, nullptr, [&] {
+        auto contract_it = context->contracts.find(::abieos::name{contract});
+        if (contract_it == context->contracts.end())
+            throw std::runtime_error("contract \"" + eosio::name_to_string(contract) + "\" is not loaded");
+        auto& c = contract_it->second;
+
+        auto kv_table_it = c.kv_table_types.find(name{kv_table});
+        if (kv_table_it == c.kv_table_types.end())
+            throw std::runtime_error("contract \"" + eosio::name_to_string(contract) + "\" does not have kv table \"" +
+                                     eosio::name_to_string(kv_table) + "\"");
+        return kv_table_it->second.c_str();
+    });
+}
+
+extern "C" const char* abieos_get_kv_table_primary_index_name(abieos_context* context, uint64_t contract, uint64_t kv_table) {
+    return handle_exceptions(context, nullptr, [&] {
+        auto contract_it = context->contracts.find(::abieos::name{contract});
+        if (contract_it == context->contracts.end())
+            throw std::runtime_error("contract \"" + eosio::name_to_string(contract) + "\" is not loaded");
+        auto& c = contract_it->second;
+
+        auto kv_table_it = c.kv_table_primary_key_name.find(name{kv_table});
+        if (kv_table_it == c.kv_table_primary_key_name.end())
+            throw std::runtime_error("contract \"" + eosio::name_to_string(contract) + "\" does not have kv table \"" +
+                                     eosio::name_to_string(kv_table) + "\"");
+        context->result_str = eosio::name_to_string(kv_table_it->second.value);
+        return context->result_str.c_str();
+    });
+}
+
+extern "C" const char* abieos_kv_bin_to_json(abieos_context* context, uint64_t contract, const char* key_data,
+                                             size_t key_data_size, const char* value_data, size_t value_data_size) {
+    return handle_exceptions(context, nullptr, [&] {
+        auto contract_it = context->contracts.find(::abieos::name{contract});
+        if (contract_it == context->contracts.end())
+            throw std::runtime_error("contract \"" + eosio::name_to_string(contract) + "\" is not loaded");
+        auto& c = contract_it->second;
+
+        context->result_str = c.kv_table_primary_index_to_json(eosio::input_stream(key_data, key_data_size),
+                                                               eosio::input_stream(value_data, value_data_size));
+        return context->result_str.c_str();
     });
 }
 
@@ -213,10 +238,7 @@ extern "C" abieos_bool abieos_json_to_bin(abieos_context* context, uint64_t cont
         auto contract_it = context->contracts.find(::abieos::name{contract});
         if (contract_it == context->contracts.end())
             return set_error(context, "contract \"" + eosio::name_to_string(contract) + "\" is not loaded");
-        std::string error;
-        auto t = contract_it->second.get_type(type);
-        context->result_bin.clear();
-        context->result_bin = t->json_to_bin(json);
+        context->result_bin = contract_it->second.convert_to_bin(type, json);
         return true;
     });
 }
@@ -251,11 +273,7 @@ extern "C" const char* abieos_bin_to_json(abieos_context* context, uint64_t cont
             (void)set_error(error, "contract \"" + eosio::name_to_string(contract) + "\" is not loaded");
             return nullptr;
         }
-        auto t = contract_it->second.get_type(type);
-        eosio::input_stream bin{data, size};
-        context->result_str = t->bin_to_json(bin);
-        if (bin.pos != bin.end)
-            throw std::runtime_error("Extra data");
+        context->result_str = contract_it->second.convert_to_json(type, eosio::input_stream{data, size});
         return context->result_str.c_str();
     });
 }
@@ -278,15 +296,7 @@ extern "C" const char* abieos_hex_to_json(abieos_context* context, uint64_t cont
 extern "C" abieos_bool abieos_abi_json_to_bin(abieos_context* context, const char* abi_json) {
     fix_null_str(abi_json);
     return handle_exceptions(context, false, [&] {
-        std::string abi_copy{abi_json};
-        eosio::json_token_stream json_stream(abi_copy.data());
-        abi_def def{};
-        std::string error;
-        from_json(def, json_stream);
-        if (!check_abi_version(def.version, error)) {
-            return set_error(context, std::move(error));
-        }
-        context->result_bin = convert_to_bin(def);
+        context->result_bin = abi_def::json_to_bin(abi_json);
         return true;
     });
 }
@@ -298,19 +308,7 @@ extern "C" const char* abieos_abi_bin_to_json(abieos_context* context, const cha
             set_error(context, "no data");
             return nullptr;
         }
-        eosio::input_stream bin_stream{abi_bin_data, abi_bin_data_size};
-        abi_def def{};
-        from_bin(def, bin_stream);
-        std::string error;
-        if (!check_abi_version(def.version, error)) {
-            set_error(context, std::move(error));
-            return nullptr;
-        }
-        std::vector<char> bytes;
-        eosio::vector_stream byte_stream(bytes);
-        to_json(def, byte_stream);
-
-        context->result_str.assign(bytes.begin(), bytes.end());
+        context->result_str = abi_def::bin_to_json({abi_bin_data, abi_bin_data_size});
         return context->result_str.c_str();
     });
 }

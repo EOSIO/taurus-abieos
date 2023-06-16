@@ -39,6 +39,11 @@ namespace eosio { namespace reflection {
    template <typename F>                                                                                               \
    constexpr void eosio_for_each_field(STRUCT*, F f)
 
+#define EOSIO_REFLECT_FRIEND_SIGNATURE(STRUCT, ...)                                                                           \
+   [[maybe_unused]] inline friend constexpr const char* get_type_name(STRUCT*) { return #STRUCT; }                                      \
+   template <typename F>                                                                                               \
+   friend constexpr void eosio_for_each_field(STRUCT*, F f)
+
 /**
  * EOSIO_REFLECT(<struct>, <member or base spec>...)
  * Each parameter should be either the keyword 'base' followed by a base class of the struct or
@@ -46,6 +51,9 @@ namespace eosio { namespace reflection {
  */
 #define EOSIO_REFLECT(...)                                                                                             \
    EOSIO_REFLECT_SIGNATURE(__VA_ARGS__) { EOSIO_MAP_REUSE_ARG0(EOSIO_REFLECT_INTERNAL, __VA_ARGS__) }
+
+#define EOSIO_FRIEND_REFLECT(...)                                                                                             \
+   EOSIO_REFLECT_FRIEND_SIGNATURE(__VA_ARGS__) { EOSIO_MAP_REUSE_ARG0(EOSIO_REFLECT_INTERNAL, __VA_ARGS__) }
 
 // Identity the keyword 'base' followed by at least one token
 #define EOSIO_REFLECT_SELECT_I(a, b, c, d, ...) EOSIO_REFLECT_##d

@@ -1,0 +1,7 @@
+
+syntax = "proto3";
+
+package test;
+message Auth {
+    repeated uint64 role_providers = 1;
+}

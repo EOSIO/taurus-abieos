@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package deployment;
+
+message FeatureRecord {
+  int32 version = 1; // version of the feature record type
+  string feature = 2;
+}
+
+message FeatureRecords {
+  int32 version = 1; // verson of the feature record type
+  repeated FeatureRecord records = 2;
+}
